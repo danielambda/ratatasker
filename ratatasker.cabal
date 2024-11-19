@@ -26,5 +26,6 @@ executable ratatasker
         telegram-bot-api^>=7.4.3,
         text^>=2.0.2,
         mtl^>=2.3.1,
+        sqlite-simple^>=0.4.19,
     hs-source-dirs:   app
     default-language: GHC2021
