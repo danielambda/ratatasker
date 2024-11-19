@@ -10,10 +10,14 @@ import Telegram.Bot.Simple.UpdateParser (parseUpdate, text, command)
 import Control.Applicative ((<|>))
 import Control.Monad.Reader (asks)
 import qualified Data.Text as Text
-import Control.Monad (void, (<=<))
+import Control.Monad (void, (<=<), (>=>))
 import Data.Functor ((<&>))
-import Data.Foldable (for_)
+import Data.Foldable (for_, traverse_)
 import Data.Function ((&))
+import qualified Text.Read
+
+readMaybe :: Read a => Text -> Maybe a
+readMaybe = Text.Read.readMaybe . Text.unpack
 
 actWhen :: Bool -> Action -> Action
 actWhen False = const NoAction
@@ -33,19 +37,27 @@ actOnJustM :: Monad m => (a -> m Action) -> Maybe a -> m Action
 actOnJustM f (Just a) = f a
 actOnJustM _ Nothing = pure NoAction
 
-sendTextMessageTo :: ChatId -> Text -> BotM MessageId
-sendTextMessageTo chatId msgText =
+sendTextMessageTo :: ChatId -> Maybe MessageThreadId -> Text -> BotM Message
+sendTextMessageTo chatId mThreadId msgText =
   let someChatId = SomeChatId chatId in
-  fmap (messageMessageId . responseResult) $
+  fmap responseResult $
     runTG $ Telegram.sendMessage $ SendMessageRequest Nothing
-      someChatId Nothing
+      someChatId
+      mThreadId
       msgText Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
+
+deleteUserMessage :: ChatId -> BotM ()
+deleteUserMessage chatId = do
+  mUserMsgId <- asks $ fmap messageMessageId . updateMessage <=< botContextUpdate
+  for_ mUserMsgId (void . runTG . deleteMessage chatId)
 
 data Model = Model
   { modelTasks :: [Text]
-  , modelMainMessageId :: Maybe Telegram.MessageId
+  , modelMainMessage :: Maybe CompoundMessageId
   , modelVisualConfig :: VisualConfig
   }
+
+data CompoundMessageId = CompoundMessageId ChatId MessageId
 
 data VisualConfig = VisualConfig
   { visualNoTasksText :: Text
@@ -67,9 +79,9 @@ renderTasks model =
 
 data Action
   = NoAction
+  | SetMainMessageId CompoundMessageId
   | AddTasks [Text]
   | CompleteTask Text
-  | SetMainMessageId Telegram.MessageId
   | SetTasksHeader Text
   | SetNoTasksText Text
 
@@ -99,79 +111,74 @@ addTasks tasks model = model{modelTasks = tasks ++ modelTasks model}
 completeTask :: Text -> Model -> Model
 completeTask task model = model{modelTasks = filter (/= task) (modelTasks model)}
 
-setMainMessageId :: Telegram.MessageId -> Model -> Model
-setMainMessageId msgId model = model{modelMainMessageId = Just msgId}
+setMainMessage :: CompoundMessageId -> Model -> Model
+setMainMessage mainMsg model =
+  model{modelMainMessage = Just mainMsg}
 
 handleAction :: Action -> Model -> Eff Action Model
 handleAction NoAction model = model <# pure ()
 
 handleAction (AddTasks tasks) model =
-  model' <# do
-    currentChatId >>= actOnJustM handleAddTask
-  where
-    model' = addTasks tasks model
-    msgText = renderTasks model'
-
-    handleAddTask chatId = do
-      mUserMsgId <- asks $ fmap messageMessageId . updateMessage <=< botContextUpdate
-      for_ mUserMsgId (void . runTG . deleteMessage chatId)
-      createOrEditMainMessage (modelMainMessageId model') chatId msgText
+  let model' = addTasks tasks model
+  in model' <# do
+    currentChatId >>= traverse_ deleteUserMessage
+    createOrEditMainMessage model'
 
 handleAction (CompleteTask task) model =
-  model' <# do
-    currentChatId >>= actOnJustM handleCompleteTask
-  where
-    model' = completeTask task model
-    msgText = renderTasks model'
-
-    handleCompleteTask chatId = do
-      mUserMsgId <- asks $ fmap messageMessageId . updateMessage <=< botContextUpdate
-      for_ mUserMsgId (void . runTG . deleteMessage chatId)
-      createOrEditMainMessage (modelMainMessageId model') chatId msgText
+  let model' = completeTask task model
+  in model' <# do
+    currentChatId >>= traverse_ deleteUserMessage
+    createOrEditMainMessage model'
 
 handleAction (SetMainMessageId msgId) model =
-  setMainMessageId msgId model <# pure ()
+  setMainMessage msgId model <# pure ()
 
 handleAction (SetTasksHeader header) model =
-  model' <# do
-    currentChatId >>= actOnJustM handleSetTasksHeader
-  where
-    model' = model{modelVisualConfig = (modelVisualConfig model){visualTasksHeader = header}}
-    msgText = renderTasks model'
-
-    handleSetTasksHeader chatId = do
-      mUserMsgId <- asks $ fmap messageMessageId . updateMessage <=< botContextUpdate
-      for_ mUserMsgId (void . runTG . deleteMessage chatId)
-      actUnlessF (null $ modelTasks model') $
-        createOrEditMainMessage (modelMainMessageId model') chatId msgText
+  let model' = model{modelVisualConfig = (modelVisualConfig model){visualTasksHeader = header}}
+  in model' <# do
+    currentChatId >>= traverse_ deleteUserMessage
+    actUnlessF (null $ modelTasks model') $
+      createOrEditMainMessage model'
 
 handleAction (SetNoTasksText txt) model =
-  model' <# do
-    currentChatId >>= actOnJustM handleSetTasksHeader
+  let model' = model{modelVisualConfig = (modelVisualConfig model){visualNoTasksText = txt}}
+  in model' <# do
+    currentChatId >>= traverse_ deleteUserMessage
+    actWhenF (null $ modelTasks model') $
+      createOrEditMainMessage model'
+
+createOrEditMainMessage :: Model -> BotM Action
+createOrEditMainMessage model =
+  maybe createNewMainMessage editMainMessage
+    $ modelMainMessage model
   where
-    model' = model{modelVisualConfig = (modelVisualConfig model){visualNoTasksText = txt}}
-    msgText = renderTasks model'
+    msgText = renderTasks model
 
-    handleSetTasksHeader chatId = do
-      mUserMsgId <- asks $ fmap messageMessageId . updateMessage <=< botContextUpdate
-      for_ mUserMsgId (void . runTG . deleteMessage chatId)
-      actWhenF (null $ modelTasks model') $
-        createOrEditMainMessage (modelMainMessageId model') chatId msgText
+    editMainMessage (CompoundMessageId chatId msgId) = do
+      let someChatId = SomeChatId chatId
+      editMessage
+        (EditChatMessageId someChatId msgId)
+        (toEditMessage msgText)
+      return NoAction
 
-createOrEditMainMessage :: Maybe MessageId -> ChatId -> Text -> BotM Action
-createOrEditMainMessage (Just mainMsgId) chatId msgText = do
-  let someChatId = SomeChatId chatId
-  editMessage
-    (EditChatMessageId someChatId mainMsgId)
-    (toEditMessage msgText)
-  return NoAction
+    createNewMainMessage = do
+      mChatId <- currentChatId
+      mThreadId <- asks $ messageMessageThreadId <=< updateMessage <=< botContextUpdate
+      actOnJustM
+        (\chatId -> sendTextMessageTo chatId mThreadId msgText
+                <&> SetMainMessageId . compoundIdOfMessage
+        ) mChatId
 
-createOrEditMainMessage Nothing chatId msgText =
-  sendTextMessageTo chatId msgText <&> SetMainMessageId
+compoundIdOfMessage :: Message -> CompoundMessageId
+compoundIdOfMessage =
+  CompoundMessageId <$> (chatId . messageChat) <*> messageMessageId
 
 run :: Telegram.Token -> IO ()
 run token =
-  Telegram.defaultTelegramClientEnv token >>= startBot_ bot
+  Telegram.defaultTelegramClientEnv token >>=
+    startBot_ (conversationBot keySelector bot)
+  where
+    keySelector = (Just .) $ (,) <$> updateChatId <*> (updateMessage >=> messageMessageThreadId)
 
 main :: IO ()
 main = do
