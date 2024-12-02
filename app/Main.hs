@@ -1,5 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-type-defaults #-}
+{-# LANGUAGE BlockArguments #-}
 
 module Main where
 
@@ -9,13 +10,14 @@ import Telegram.Bot.Simple.UpdateParser (parseUpdate, text, command)
 
 import Control.Applicative ((<|>))
 import Control.Monad.Reader (asks)
-import Control.Monad (void, (<=<), (>=>))
+import Control.Monad ((<=<), (>=>))
+import Data.Function ((&))
 import Data.Functor ((<&>))
 import Data.Foldable (for_, traverse_)
-import Data.Function ((&))
-import qualified Text.Read
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Text.Read
+import Database.SQLite.Simple
 
 readMaybe :: Read a => Text -> Maybe a
 readMaybe = Text.Read.readMaybe . Text.unpack
@@ -47,10 +49,11 @@ sendTextMessageTo chatId mThreadId msgText =
       mThreadId
       msgText Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
 
-deleteUpdateMessage :: ChatId -> BotM () -- TODO why take chatId here?
-deleteUpdateMessage chatId = do
-  mMsgId <- asks $ fmap messageMessageId . updateMessage <=< botContextUpdate
-  for_ mMsgId (void . runTG . deleteMessage chatId)
+deleteUpdateMessage :: BotM ()
+deleteUpdateMessage =
+  currentChatId >>= traverse_ \chatId -> do
+    mMsgId <- asks $ fmap messageMessageId . updateMessage <=< botContextUpdate
+    for_ mMsgId $ runTG . deleteMessage chatId
 
 data Model = Model
   { modelTasks :: [Text]
@@ -122,13 +125,13 @@ handleAction NoAction model = model <# pure ()
 handleAction (AddTasks tasks) model =
   let model' = addTasks tasks model
   in model' <# do
-    currentChatId >>= traverse_ deleteUpdateMessage
+    deleteUpdateMessage
     createOrEditMainMessage model'
 
 handleAction (CompleteTask task) model =
   let model' = completeTask task model
   in model' <# do
-    currentChatId >>= traverse_ deleteUpdateMessage
+    deleteUpdateMessage
     createOrEditMainMessage model'
 
 handleAction (SetMainMessageId msgId) model =
@@ -137,14 +140,14 @@ handleAction (SetMainMessageId msgId) model =
 handleAction (SetTasksHeader header) model =
   let model' = model{modelVisualConfig = (modelVisualConfig model){visualTasksHeader = header}}
   in model' <# do
-    currentChatId >>= traverse_ deleteUpdateMessage
+    deleteUpdateMessage
     actUnlessF (null $ modelTasks model') $
       createOrEditMainMessage model'
 
 handleAction (SetNoTasksText txt) model =
   let model' = model{modelVisualConfig = (modelVisualConfig model){visualNoTasksText = txt}}
   in model' <# do
-    currentChatId >>= traverse_ deleteUpdateMessage
+    deleteUpdateMessage
     actWhenF (null $ modelTasks model') $
       createOrEditMainMessage model'
 
@@ -163,12 +166,10 @@ createOrEditMainMessage model =
       return NoAction
 
     createNew = do
-      mChatId <- currentChatId
       mThreadId <- asks $ messageMessageThreadId <=< updateMessage <=< botContextUpdate
-      actOnJustM
-        (\chatId -> sendTextMessageTo chatId mThreadId msgText
-                <&> SetMainMessageId . compoundIdOfMessage
-        ) mChatId
+      currentChatId >>= actOnJustM \chatId ->
+        sendTextMessageTo chatId mThreadId msgText
+        <&> SetMainMessageId . compoundIdOfMessage
 
 compoundIdOfMessage :: Message -> CompoundMessageId
 compoundIdOfMessage =
@@ -178,11 +179,22 @@ run :: Telegram.Token -> IO ()
 run token =
   Telegram.defaultTelegramClientEnv token >>=
     startBot_ (conversationBot keySelector bot)
-  where
-    keySelector :: Update -> Maybe (Maybe ChatId, Maybe MessageThreadId)
-    keySelector = (Just .) $ (,) <$> updateChatId <*> (updateMessage >=> messageMessageThreadId)
+  where keySelector = Just . updateKeySelector
+
+updateKeySelector :: Update -> (Maybe ChatId, Maybe MessageThreadId)
+updateKeySelector = (,) <$> updateChatId <*> (updateMessage >=> messageMessageThreadId)
+
+initDb :: Connection -> IO ()
+initDb conn = execute_ conn
+  "CREATE TABLE IF NOT EXISTS tasks (\
+  \id INTEGER PRIMARY KEY,\
+  \text TEXT\
+  \)"
 
 main :: IO ()
 main = do
+  conn <- open "db.db"
+  initDb conn
   putStrLn "The bot is running"
   run "7946973775:AAECaTwKRYC4D5YSZ8hD9wI2pT_HoTlOcwU"
+
