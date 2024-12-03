@@ -11,19 +11,18 @@ import Models
 import Telegram.Bot.API hiding (User, UserId)
 import Telegram.Bot.Simple
 import Telegram.Bot.Simple.UpdateParser (parseUpdate, text, command)
+import Database.SQLite.Simple
 
+import GHC.Base (join)
 import Control.Applicative ((<|>))
 import Control.Monad.Reader (asks)
 import Control.Monad ((<=<), (>=>), forM_)
-import Data.Maybe (fromJust)
+import Control.Monad.IO.Class (liftIO)
 import Data.Function ((&))
 import Data.Foldable (for_, traverse_)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Text.Read
-import Database.SQLite.Simple
-import Control.Monad.IO.Class (liftIO)
-import GHC.Base (join)
 
 readMaybe :: Read a => Text -> Maybe a
 readMaybe = Text.Read.readMaybe . Text.unpack
@@ -75,65 +74,63 @@ handleUpdate _ = parseUpdate $
   CompleteTask <$> (command "done" <|> command "check" <|> command "complete") <|>
   SetTasksHeader <$> (command "setHeader" <|> command "set_header") <|>
   SetNoTasksText <$> (command "setNoTasksText" <|> command "set_no_tasks_text") <|>
+  CreateNewMainMessage <$ (command "newMainMessage" <|> command "new_main_message") <|>
   AddTasks . reverse . Text.lines <$> text
 
 handleAction :: Action -> Model -> Eff Action Model
 handleAction NoAction model = model <# pure ()
 
 handleAction (AddTasks tasks) (Model conn) = Model conn <# do
-  userId <- fromJust <$> currentUserId
-
-  forM_ tasks $ liftIO . addTask conn userId
-
-  deleteUpdateMessage
-  mUser <- currentUser conn
-  user <- maybe (initUser_ conn userId) pure mUser
-  updateMainMessage user
+  currentUserId >>= actOnJustM \userId -> do
+    forM_ tasks $ liftIO . addTask conn userId
+    deleteUpdateMessage
+    user <- getOrCreateUser conn userId
+    updateMainMessage userId user
 
 handleAction (CompleteTask task) (Model conn) = Model conn <# do
-  userId <- fromJust <$> currentUserId
-
-  liftIO $ deleteTask conn userId task
-
-  deleteUpdateMessage
-  mUser <- currentUser conn
-  user <- maybe (initUser_ conn userId) pure mUser
-  updateMainMessage user
+  currentUserId >>= actOnJustM \userId -> do
+    liftIO $ deleteTask conn userId task
+    deleteUpdateMessage
+    user <- getOrCreateUser conn userId
+    updateMainMessage userId user
 
 handleAction (SetTasksHeader header) (Model conn) = Model conn <# do
-  userId <- fromJust <$> currentUserId
-
-  liftIO $ updateTasksHeader conn userId header
-
-  deleteUpdateMessage
-  mUser <- currentUser conn
-  user <- maybe (initUser_ conn userId) pure mUser
-  actUnlessF (null $ userTasks user) $
-    updateMainMessage user
+  currentUserId >>= actOnJustM \userId -> do
+    liftIO $ updateTasksHeader conn userId header
+    deleteUpdateMessage
+    user <- getOrCreateUser conn userId
+    actUnlessF (null $ userTasks user) $
+      updateMainMessage userId user
 
 handleAction (SetNoTasksText txt) (Model conn) = Model conn <# do
-  userId <- fromJust <$> currentUserId
+  currentUserId >>= actOnJustM \userId -> do
+    liftIO $ updateNoTasksText conn userId txt
+    deleteUpdateMessage
+    user <- getOrCreateUser conn userId
+    actWhenF (null $ userTasks user) $
+      updateMainMessage userId user
 
-  liftIO $ updateNoTasksText conn userId txt
+handleAction CreateNewMainMessage (Model conn) = Model conn <# do
+  currentUserId >>= actOnJustM \userId -> do
+    user <- getOrCreateUser conn userId
+    let txt = renderTasks user
+    mainMsgId <- messageMessageId <$> sendTextMessageTo userId txt
+    liftIO $ updateMainMessageId conn userId mainMsgId
+    deleteUpdateMessage
+    updateMainMessage userId user
 
-  deleteUpdateMessage
-  mUser <- currentUser conn
-  user <- maybe (initUser_ conn userId) pure mUser
-  actWhenF (null $ userTasks user) $
-    updateMainMessage user
-
-updateMainMessage :: User -> BotM Action
-updateMainMessage user =
+updateMainMessage :: UserId -> User -> BotM Action
+updateMainMessage (UserId chatId _) user =
   edit $ userMainMessage user
   where
     msgText = renderTasks user
 
     edit msgId = do
-      someChatId <- SomeChatId . fromJust <$> currentChatId
-      edited <- tryEditMessage
+      let someChatId = SomeChatId chatId
+      editMessage
         (EditChatMessageId someChatId msgId)
         (toEditMessage msgText)
-      return if edited then NoAction else undefined
+      return NoAction
 
 initUser :: Connection -> UserId -> Text -> VisualConfig -> BotM User
 initUser conn userId initialText visualConfig = do
@@ -157,6 +154,11 @@ currentUserId =
 currentUser :: Connection -> BotM (Maybe User)
 currentUser conn =
   fmap join $ currentUserId >>= traverse (liftIO . getUserWithId conn)
+
+getOrCreateUser :: Connection -> UserId -> BotM User
+getOrCreateUser conn userId = do
+  mUser <- currentUser conn
+  maybe (initUser_ conn userId) pure mUser
 
 run :: Token -> Connection -> IO ()
 run token conn =

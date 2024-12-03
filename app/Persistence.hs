@@ -31,40 +31,54 @@ initDb conn = do
     \)"
 
 addTask :: Connection -> UserId -> Text -> IO ()
-addTask conn (UserId (ChatId chatIdInt) mThreadId) task =
-  let mThreadIdInt = fmap (\(MessageThreadId m) -> m) mThreadId
+addTask conn (UserId (ChatId chatId) mThreadIdWrapped) task =
+  let mThreadId = fmap (\(MessageThreadId m) -> m) mThreadIdWrapped
   in execute conn
     "INSERT INTO tasks\
     \(userChatId, userMessageThreadId, text) VALUES (?, ?, ?)"
-    (chatIdInt, mThreadIdInt, task)
+    (chatId, mThreadId, task)
 
 deleteTask :: Connection -> UserId -> Text -> IO ()
-deleteTask conn (UserId (ChatId chatIdInt) mThreadId) task =
-  let mThreadIdInt = fmap (\(MessageThreadId m) -> m) mThreadId
-  in execute conn
+deleteTask conn (UserId (ChatId chatId) (Just (MessageThreadId threadId))) task =
+  execute conn
     "DELETE FROM tasks \
-    \WHERE (userChatId = ?, userMessageThreadId = ?, text = ?)"
-    (chatIdInt, mThreadIdInt, task)
+    \WHERE userChatId = ? AND userMessageThreadId = ? AND text = ?"
+    (chatId, threadId, task)
+deleteTask conn (UserId (ChatId chatId) Nothing) task =
+  execute conn
+    "DELETE FROM tasks \
+    \WHERE userChatId = ? AND userMessageThreadId IS NULL AND text = ?"
+    (chatId, task)
 
 updateTasksHeader :: Connection -> UserId -> Text -> IO ()
-updateTasksHeader conn (UserId (ChatId chatIdInt) Nothing) header =
+updateTasksHeader conn (UserId (ChatId chatId) Nothing) header =
   execute conn
     "UPDATE users SET visualTasksHeader = ? WHERE chatId = ? AND messageThreadId IS NULL"
-    (header, chatIdInt)
-updateTasksHeader conn (UserId (ChatId chatIdInt) (Just (MessageThreadId threadIdInt))) header =
+    (header, chatId)
+updateTasksHeader conn (UserId (ChatId chatId) (Just (MessageThreadId threadId))) header =
   execute conn
     "UPDATE users SET visualTasksHeader = ? WHERE chatId = ? AND messageThreadId = ?"
-    (header, chatIdInt, threadIdInt)
+    (header, chatId, threadId)
 
 updateNoTasksText :: Connection -> UserId -> Text -> IO ()
-updateNoTasksText conn (UserId (ChatId chatIdInt) Nothing) txt =
+updateNoTasksText conn (UserId (ChatId chatId) Nothing) txt =
   execute conn
     "UPDATE users SET visualNoTasksText = ? WHERE chatId = ? AND messageThreadId IS NULL"
-    (txt, chatIdInt)
+    (txt, chatId)
 updateNoTasksText conn (UserId (ChatId chatId) (Just (MessageThreadId threadId))) txt =
   execute conn
     "UPDATE users SET visualNoTasksText = ? WHERE chatId = ? AND messageThreadId = ?"
     (txt, chatId, threadId)
+
+updateMainMessageId :: Connection -> UserId -> MessageId -> IO ()
+updateMainMessageId conn (UserId (ChatId chatId) Nothing) (MessageId msgId) =
+  execute conn
+    "UPDATE users SET mainMessageId = ? WHERE chatId = ? AND messageThreadId IS NULL"
+    (msgId, chatId)
+updateMainMessageId conn (UserId (ChatId chatId) (Just (MessageThreadId threadId))) (MessageId msgId) =
+  execute conn
+    "UPDATE users SET mainMessageId = ? WHERE chatId = ? AND messageThreadId = ?"
+    (msgId, chatId, threadId)
 
 getTasks :: Connection -> UserId -> IO [Text]
 getTasks conn (UserId (ChatId chatId) Nothing) =
