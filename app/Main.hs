@@ -114,12 +114,11 @@ handleAction (SetNoTasksText txt) (Model conn) = Model conn <# do
 
 handleAction CreateNewMainMessage (Model conn) = Model conn <# do
   currentUserId >>= actOnJustM \userId -> do
-    user <- getOrCreateUser conn userId
-    let txt = renderTasks user
+    txt <- renderTasks <$> getOrCreateUser conn userId
     mainMsgId <- messageMessageId <$> sendTextMessageTo userId txt
     liftIO $ updateMainMessageId conn userId mainMsgId
     deleteUpdateMessage
-    updateMainMessage userId user
+    return NoAction
 
 updateMainMessage :: UserId -> User -> BotM Action
 updateMainMessage (UserId chatId _) user =
