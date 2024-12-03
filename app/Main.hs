@@ -12,6 +12,7 @@ import Telegram.Bot.API hiding (User, UserId)
 import Telegram.Bot.Simple
 import Telegram.Bot.Simple.UpdateParser (parseUpdate, text, command)
 import Database.SQLite.Simple
+import Configuration.Dotenv (loadFile, defaultConfig)
 
 import GHC.Base (join)
 import Control.Applicative ((<|>))
@@ -23,6 +24,7 @@ import Data.Foldable (for_, traverse_)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Text.Read
+import System.Environment (getEnv)
 
 readMaybe :: Read a => Text -> Maybe a
 readMaybe = Text.Read.readMaybe . Text.unpack
@@ -160,15 +162,17 @@ getOrCreateUser conn userId = do
   mUser <- currentUser conn
   maybe (initUser_ conn userId) pure mUser
 
-run :: Token -> Connection -> IO ()
-run token conn =
-  defaultTelegramClientEnv token >>=
-    startBot_ (bot conn)
+run :: Connection -> Token -> IO ()
+run conn =
+  startBot_ (bot conn) <=< defaultTelegramClientEnv
 
 main :: IO ()
 main = do
-  conn <- open "db.db"
+  loadFile defaultConfig
+
+  conn <- open =<< getEnv "DB_CONNECTION_STRING"
   initDb conn
+
   putStrLn "The bot is running"
-  run "7946973775:AAECaTwKRYC4D5YSZ8hD9wI2pT_HoTlOcwU" conn
+  run conn =<< getEnvToken "TELEGRAM_BOT_TOKEN"
 
