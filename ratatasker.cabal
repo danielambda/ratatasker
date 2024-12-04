@@ -21,7 +21,8 @@ executable ratatasker
     other-modules:
         Actions,
         Persistence,
-        Models
+        Models,
+        TelegramUtils,
     build-depends:
         base ^>=4.18.2.1,
         telegram-bot-simple ^>=0.14.4,
