@@ -25,14 +25,10 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Text.Read
 import System.Environment (getEnv)
+import Data.Functor (void)
 
 readMaybe :: Read a => Text -> Maybe a
 readMaybe = Text.Read.readMaybe . Text.unpack
-
-tryEditMessage :: EditMessageId -> EditMessage -> BotM Bool
-tryEditMessage editMsgId editMsg = do
-  let request = editMessageToEditMessageTextRequest editMsgId editMsg
-  responseOk <$> runTG request
 
 sendTextMessageTo :: UserId -> Text -> BotM Message
 sendTextMessageTo (UserId chatId mThreadId) msgText =
@@ -48,6 +44,15 @@ deleteUpdateMessage =
   currentChatId >>= traverse_ \chatId -> do
     mMsgId <- asks $ fmap messageMessageId . updateMessage <=< botContextUpdate
     for_ mMsgId $ runTG . deleteMessage chatId
+
+pinMessage :: ChatId -> MessageId -> BotM ()
+pinMessage chatId msgId =
+  void $ runTG $ PinChatMessageRequest (SomeChatId chatId) msgId Nothing
+
+pinMessageUniquely :: ChatId -> MessageId -> BotM ()
+pinMessageUniquely chatId msgId = do
+  void $ runTG $ unpinAllChatMessages (SomeChatId chatId)
+  pinMessage chatId msgId
 
 renderTasks :: User -> Text
 renderTasks user =
@@ -73,10 +78,10 @@ bot conn = BotApp
 
 handleUpdate :: Model -> Update -> Maybe Action
 handleUpdate _ = parseUpdate $
-  CompleteTask <$> (command "done" <|> command "check" <|> command "complete") <|>
-  SetTasksHeader <$> (command "setHeader" <|> command "set_header") <|>
-  SetNoTasksText <$> (command "setNoTasksText" <|> command "set_no_tasks_text") <|>
-  CreateNewMainMessage <$ (command "newMainMessage" <|> command "new_main_message") <|>
+  CompleteTask <$> command "done" <|>
+  SetTasksHeader <$> command "setheader" <|>
+  SetNoTasksText <$> command "setnotaskstext" <|>
+  CreateNewMainMessage <$ command "reload" <|>
   AddTasks . reverse . Text.lines <$> text
 
 handleAction :: Action -> Model -> Eff Action Model
@@ -113,9 +118,10 @@ handleAction (SetNoTasksText txt) (Model conn) = Model conn <# do
       updateMainMessage userId user
 
 handleAction CreateNewMainMessage (Model conn) = Model conn <# do
-  currentUserId >>= actOnJustM \userId -> do
+  currentUserId >>= actOnJustM \userId@(UserId chatId _) -> do
     txt <- renderTasks <$> getOrCreateUser conn userId
     mainMsgId <- messageMessageId <$> sendTextMessageTo userId txt
+    pinMessageUniquely chatId mainMsgId
     liftIO $ updateMainMessageId conn userId mainMsgId
     deleteUpdateMessage
     return NoAction
