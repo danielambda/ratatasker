@@ -25,8 +25,8 @@ initDb conn = do
     \chatId INTEGER NOT NULL,\
     \messageThreadId INTEGER,\
     \mainMessageId INTEGER NOT NULL,\
-    \visualNoTasksText VARCHAR NOT NULL,\
-    \visualTasksHeaderText VARCHAR NOT NULL,\
+    \noTasksText VARCHAR NOT NULL,\
+    \tasksHeader VARCHAR NOT NULL,\
     \PRIMARY KEY (chatId, messageThreadId)\
     \)"
 
@@ -53,21 +53,21 @@ deleteTask conn (UserId (ChatId chatId) Nothing) task =
 updateTasksHeader :: Connection -> UserId -> Text -> IO ()
 updateTasksHeader conn (UserId (ChatId chatId) Nothing) header =
   execute conn
-    "UPDATE users SET visualTasksHeader = ? WHERE chatId = ? AND messageThreadId IS NULL"
+    "UPDATE users SET tasksHeader = ? WHERE chatId = ? AND messageThreadId IS NULL"
     (header, chatId)
 updateTasksHeader conn (UserId (ChatId chatId) (Just (MessageThreadId threadId))) header =
   execute conn
-    "UPDATE users SET visualTasksHeader = ? WHERE chatId = ? AND messageThreadId = ?"
+    "UPDATE users SET tasksHeader = ? WHERE chatId = ? AND messageThreadId = ?"
     (header, chatId, threadId)
 
 updateNoTasksText :: Connection -> UserId -> Text -> IO ()
 updateNoTasksText conn (UserId (ChatId chatId) Nothing) txt =
   execute conn
-    "UPDATE users SET visualNoTasksText = ? WHERE chatId = ? AND messageThreadId IS NULL"
+    "UPDATE users SET noTasksText = ? WHERE chatId = ? AND messageThreadId IS NULL"
     (txt, chatId)
 updateNoTasksText conn (UserId (ChatId chatId) (Just (MessageThreadId threadId))) txt =
   execute conn
-    "UPDATE users SET visualNoTasksText = ? WHERE chatId = ? AND messageThreadId = ?"
+    "UPDATE users SET noTasksText = ? WHERE chatId = ? AND messageThreadId = ?"
     (txt, chatId, threadId)
 
 updateMainMessageId :: Connection -> UserId -> MessageId -> IO ()
@@ -106,13 +106,13 @@ getUserWithId conn userId@(UserId (ChatId chatId) mThreadId) =
   where
     queryUserWithoutThreadId = query conn
       "SELECT \
-      \mainMessageId, visualNoTasksText, visualTasksHeaderText \
+      \mainMessageId, noTasksText, tasksHeader \
       \FROM users WHERE chatid = ? AND messageThreadId IS NULL"
       (Only chatId)
 
     queryUserWithThreadId (MessageThreadId threadId) = query conn
       "SELECT \
-      \mainMessageId, visualNoTasksText, visualTasksHeaderText \
+      \mainMessageId, noTasksText, tasksHeader \
       \FROM users WHERE chatid = ? AND messageThreadId = ?"
       (chatId, threadId)
 
@@ -124,7 +124,7 @@ createEmptyUser conn
   execute conn
     "INSERT INTO users \
     \(chatId, messageThreadId, \
-    \mainMessageId, visualNoTasksText, visualTasksHeaderText) \
+    \mainMessageId, noTasksText, tasksHeader) \
     \VALUES (?, ?, ?, ?, ?)"
     (chatId, mThreadId, mainMsgId, noTasksText, header)
 

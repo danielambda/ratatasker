@@ -1,6 +1,7 @@
 module Actions where
 
 import Data.Text (Text)
+import Models (UserId)
 
 actWhen :: Bool -> Action -> Action
 actWhen False = const NoAction
@@ -18,9 +19,12 @@ actOnJustM _ Nothing = pure NoAction
 
 data Action
   = NoAction
+  | UpdateMainMessage UserId
   | AddTasks [Text]
   | CompleteTask Text
   | SetTasksHeader Text
   | SetNoTasksText Text
   | CreateNewMainMessage
+  | ShowHelp
+  deriving Show
 

@@ -4,6 +4,7 @@ import Telegram.Bot.API
 import Data.Text (Text)
 
 data UserId = UserId ChatId (Maybe MessageThreadId)
+  deriving Show
 
 data User = User
   { userTasks :: [Text]

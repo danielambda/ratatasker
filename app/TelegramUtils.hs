@@ -9,6 +9,8 @@ import Data.Text (Text)
 import Data.Functor (void)
 import Data.Foldable (for_, traverse_)
 import Telegram.Bot.API hiding (UserId, User)
+import Control.Monad ((<=<))
+import Control.Monad.Reader (asks)
 
 sendTextMessageTo :: UserId -> Text -> BotM Message
 sendTextMessageTo (UserId chatId mThreadId) msgText =

@@ -57,24 +57,27 @@ handleUpdate _ = parseUpdate $
   SetTasksHeader <$> command "setheader" <|>
   SetNoTasksText <$> command "setnotaskstext" <|>
   CreateNewMainMessage <$ command "reload" <|>
-  AddTasks . reverse . Text.lines <$> text
+  ShowHelp <$ command "help" <|>
+  AddTasks . Text.lines <$> text
 
 handleAction :: Action -> Model -> Eff Action Model
-handleAction NoAction model = model <# pure ()
+handleAction NoAction model = pure model
+
+handleAction (UpdateMainMessage userId) (Model conn) = Model conn <# do
+  user <- getOrCreateUser conn userId
+  updateMainMessage userId user
 
 handleAction (AddTasks tasks) (Model conn) = Model conn <# do
   currentUserId >>= actOnJustM \userId -> do
     forM_ tasks $ liftIO . addTask conn userId
     deleteUpdateMessage
-    user <- getOrCreateUser conn userId
-    updateMainMessage userId user
+    return $ UpdateMainMessage userId
 
 handleAction (CompleteTask task) (Model conn) = Model conn <# do
   currentUserId >>= actOnJustM \userId -> do
     liftIO $ deleteTask conn userId task
     deleteUpdateMessage
-    user <- getOrCreateUser conn userId
-    updateMainMessage userId user
+    return $ UpdateMainMessage userId
 
 handleAction (SetTasksHeader header) (Model conn) = Model conn <# do
   currentUserId >>= actOnJustM \userId -> do
@@ -100,6 +103,33 @@ handleAction CreateNewMainMessage (Model conn) = Model conn <# do
     liftIO $ updateMainMessageId conn userId mainMsgId
     deleteUpdateMessage
     return NoAction
+
+handleAction ShowHelp (Model conn) = Model conn <# do
+  currentUserId >>= actOnJustM \userId@(UserId chatId _) -> do
+    deleteUpdateMessage
+    let someChatId = SomeChatId chatId
+    mainMsgId <- userMainMessage <$> getOrCreateUser conn userId
+    editMessage
+      (EditChatMessageId someChatId mainMsgId)
+      (EditMessage
+        helpText Nothing Nothing
+        (Just $ inlineKeyboard userId)
+      )
+    return NoAction
+  where
+    helpText :: Text
+    helpText = Text.unlines
+      [ "Here is my the list of commands:"
+      , "- Just type any text and I will add it to your tasks"
+      , "- Use /done <taskname> to mark task as done"
+      , "- Use /reload to create new main message"
+      , "- Use /setheader <header> to set header for the list"
+      , "- Use /setnotaskstext <text> to set text that will be displayed when the list is empty"
+      , "- Use /help to show this message"
+      ]
+
+    inlineKeyboard userId = SomeInlineKeyboardMarkup $ InlineKeyboardMarkup
+      [[actionButton "Show Tasks" (UpdateMainMessage userId)]]
 
 updateMainMessage :: UserId -> User -> BotM Action
 updateMainMessage (UserId chatId _) user =
@@ -138,9 +168,8 @@ currentUser conn =
   fmap join $ currentUserId >>= traverse (liftIO . getUserWithId conn)
 
 getOrCreateUser :: Connection -> UserId -> BotM User
-getOrCreateUser conn userId = do
-  mUser <- currentUser conn
-  maybe (initUser_ conn userId) pure mUser
+getOrCreateUser conn userId =
+  maybe (initUser_ conn userId) pure =<< currentUser conn
 
 run :: Connection -> Token -> IO ()
 run conn =
