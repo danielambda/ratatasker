@@ -9,9 +9,9 @@ import Actions
 import Persistence
 import Models
 
-import Telegram.Bot.API hiding (User, UserId)
+import Telegram.Bot.API hiding (editMessageReplyMarkup, User, UserId)
 import Telegram.Bot.Simple
-import Telegram.Bot.Simple.UpdateParser (parseUpdate, text, command)
+import Telegram.Bot.Simple.UpdateParser (parseUpdate, text, command, callbackQueryDataRead, mkParser)
 import Database.SQLite.Simple
 import Configuration.Dotenv (loadFile, defaultConfig)
 
@@ -53,15 +53,20 @@ bot conn = BotApp
 
 handleUpdate :: Model -> Update -> Maybe Action
 handleUpdate _ = parseUpdate $
+  DeletePinMessageMessage <$ mkParser (fmap messageMessageId . messagePinnedMessage <=< updateMessage) <|>
   CompleteTask <$> command "done" <|>
   SetTasksHeader <$> command "setheader" <|>
   SetNoTasksText <$> command "setnotaskstext" <|>
   CreateNewMainMessage <$ command "reload" <|>
   ShowHelp <$ command "help" <|>
+  callbackQueryDataRead <|>
   AddTasks . Text.lines <$> text
 
 handleAction :: Action -> Model -> Eff Action Model
 handleAction NoAction model = pure model
+
+handleAction DeletePinMessageMessage model = model <#
+  deleteUpdateMessage
 
 handleAction (UpdateMainMessage userId) (Model conn) = Model conn <# do
   user <- getOrCreateUser conn userId
@@ -107,17 +112,12 @@ handleAction CreateNewMainMessage (Model conn) = Model conn <# do
 handleAction ShowHelp (Model conn) = Model conn <# do
   currentUserId >>= actOnJustM \userId@(UserId chatId _) -> do
     deleteUpdateMessage
-    let someChatId = SomeChatId chatId
     mainMsgId <- userMainMessage <$> getOrCreateUser conn userId
     editMessage
-      (EditChatMessageId someChatId mainMsgId)
-      (EditMessage
-        helpText Nothing Nothing
-        (Just $ inlineKeyboard userId)
-      )
+      (EditChatMessageId (SomeChatId chatId) mainMsgId)
+      (toEditMessage helpText){ editMessageReplyMarkup = replyMarkup userId }
     return NoAction
   where
-    helpText :: Text
     helpText = Text.unlines
       [ "Here is my the list of commands:"
       , "- Just type any text and I will add it to your tasks"
@@ -128,7 +128,7 @@ handleAction ShowHelp (Model conn) = Model conn <# do
       , "- Use /help to show this message"
       ]
 
-    inlineKeyboard userId = SomeInlineKeyboardMarkup $ InlineKeyboardMarkup
+    replyMarkup userId = Just $ SomeInlineKeyboardMarkup $ InlineKeyboardMarkup
       [[actionButton "Show Tasks" (UpdateMainMessage userId)]]
 
 updateMainMessage :: UserId -> User -> BotM Action
@@ -144,19 +144,6 @@ updateMainMessage (UserId chatId _) user =
         (toEditMessage msgText)
       return NoAction
 
-initUser :: Connection -> UserId -> Text -> VisualConfig -> BotM User
-initUser conn userId initialText visualConfig = do
-  mainMsgId <- messageMessageId <$> sendTextMessageTo userId initialText
-  liftIO $ createEmptyUser conn userId mainMsgId visualConfig
-
-initUser_ :: Connection -> UserId -> BotM User
-initUser_ conn userId =
-  let visualConfig = VisualConfig
-        "No tasks available! Take a break or add some tasks. 😊"
-        "Tasks:"
-      initialText = "welcome to the ratatasker"
-  in initUser conn userId initialText visualConfig
-
 currentUserId :: BotM (Maybe UserId)
 currentUserId =
   currentChatId >>= traverse \chatId -> do
@@ -169,7 +156,19 @@ currentUser conn =
 
 getOrCreateUser :: Connection -> UserId -> BotM User
 getOrCreateUser conn userId =
-  maybe (initUser_ conn userId) pure =<< currentUser conn
+  maybe initDefaultUser pure =<< currentUser conn
+  where
+    initDefaultUser =
+      let visualConfig = VisualConfig
+            "No tasks available! Take a break or add some tasks. 😊"
+            "Tasks:"
+          initialText = "welcome to the ratatasker"
+      in initUser conn userId initialText visualConfig
+
+initUser :: Connection -> UserId -> Text -> VisualConfig -> BotM User
+initUser conn userId initialText visualConfig = do
+  mainMsgId <- messageMessageId <$> sendTextMessageTo userId initialText
+  liftIO $ createEmptyUser conn userId mainMsgId visualConfig
 
 run :: Connection -> Token -> IO ()
 run conn =

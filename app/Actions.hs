@@ -26,5 +26,6 @@ data Action
   | SetNoTasksText Text
   | CreateNewMainMessage
   | ShowHelp
-  deriving Show
+  | DeletePinMessageMessage
+  deriving (Show, Read)
 

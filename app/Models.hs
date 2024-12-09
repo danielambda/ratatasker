@@ -1,10 +1,13 @@
+{-# OPTIONS_GHC -Wno-orphans #-}
 module Models where
 
-import Telegram.Bot.API
+import Telegram.Bot.API hiding (UserId)
 import Data.Text (Text)
 
+deriving instance Read ChatId
+deriving instance Read MessageThreadId
 data UserId = UserId ChatId (Maybe MessageThreadId)
-  deriving Show
+  deriving (Show, Read)
 
 data User = User
   { userTasks :: [Text]
