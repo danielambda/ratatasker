@@ -53,7 +53,7 @@ bot conn = BotApp
 
 handleUpdate :: Model -> Update -> Maybe Action
 handleUpdate _ = parseUpdate $
-  DeletePinMessageMessage <$ mkParser (fmap messageMessageId . messagePinnedMessage <=< updateMessage) <|>
+  DeleteMessage <$ messagePinedMessageId <|>
   CompleteTask <$> command "done" <|>
   SetTasksHeader <$> command "setheader" <|>
   SetNoTasksText <$> command "setnotaskstext" <|>
@@ -61,20 +61,28 @@ handleUpdate _ = parseUpdate $
   ShowHelp <$ command "help" <|>
   callbackQueryDataRead <|>
   AddTasks . Text.lines <$> text
+  where
+    messagePinedMessageId =
+      mkParser (fmap messageMessageId . messagePinnedMessage <=< updateMessage)
 
 handleAction :: Action -> Model -> Eff Action Model
 handleAction NoAction model = pure model
 
-handleAction DeletePinMessageMessage model = model <#
-  deleteUpdateMessage
+handleAction DeleteMessage model = model <# deleteUpdateMessage
 
-handleAction (UpdateMainMessage userId) (Model conn) = Model conn <# do
+handleAction (UpdateMainMessage userId@(UserId chatId _)) (Model conn) = Model conn <# do
   user <- getOrCreateUser conn userId
-  updateMainMessage userId user
+  edit user $ userMainMessage user
+  where
+    edit user msgId = do
+      let someChatId = SomeChatId chatId
+      editMessage
+        (EditChatMessageId someChatId msgId)
+        (toEditMessage $ renderTasks user)
 
 handleAction (AddTasks tasks) (Model conn) = Model conn <# do
   currentUserId >>= actOnJustM \userId -> do
-    forM_ tasks $ liftIO . addTask conn userId
+    liftIO $ forM_ tasks $ addTask conn userId
     deleteUpdateMessage
     return $ UpdateMainMessage userId
 
@@ -88,17 +96,13 @@ handleAction (SetTasksHeader header) (Model conn) = Model conn <# do
   currentUserId >>= actOnJustM \userId -> do
     liftIO $ updateTasksHeader conn userId header
     deleteUpdateMessage
-    user <- getOrCreateUser conn userId
-    actUnlessF (null $ userTasks user) $
-      updateMainMessage userId user
+    return $ UpdateMainMessage userId
 
 handleAction (SetNoTasksText txt) (Model conn) = Model conn <# do
   currentUserId >>= actOnJustM \userId -> do
     liftIO $ updateNoTasksText conn userId txt
     deleteUpdateMessage
-    user <- getOrCreateUser conn userId
-    actWhenF (null $ userTasks user) $
-      updateMainMessage userId user
+    return $ UpdateMainMessage userId
 
 handleAction CreateNewMainMessage (Model conn) = Model conn <# do
   currentUserId >>= actOnJustM \userId@(UserId chatId _) -> do
@@ -131,19 +135,6 @@ handleAction ShowHelp (Model conn) = Model conn <# do
     replyMarkup userId = Just $ SomeInlineKeyboardMarkup $ InlineKeyboardMarkup
       [[actionButton "Show Tasks" (UpdateMainMessage userId)]]
 
-updateMainMessage :: UserId -> User -> BotM Action
-updateMainMessage (UserId chatId _) user =
-  edit $ userMainMessage user
-  where
-    msgText = renderTasks user
-
-    edit msgId = do
-      let someChatId = SomeChatId chatId
-      editMessage
-        (EditChatMessageId someChatId msgId)
-        (toEditMessage msgText)
-      return NoAction
-
 currentUserId :: BotM (Maybe UserId)
 currentUserId =
   currentChatId >>= traverse \chatId -> do
@@ -152,7 +143,7 @@ currentUserId =
 
 currentUser :: Connection -> BotM (Maybe User)
 currentUser conn =
-  fmap join $ currentUserId >>= traverse (liftIO . getUserWithId conn)
+  fmap join $ traverse (liftIO . getUserWithId conn) =<< currentUserId
 
 getOrCreateUser :: Connection -> UserId -> BotM User
 getOrCreateUser conn userId =
