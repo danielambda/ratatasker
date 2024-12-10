@@ -29,18 +29,6 @@ import System.Environment (getEnv)
 readMaybe :: Read a => Text -> Maybe a
 readMaybe = Text.Read.readMaybe . Text.unpack
 
-renderTasks :: User -> Text
-renderTasks user =
-  let tasks = userTasks user
-      noTasksText = visualNoTasksText $ userVisualConfig user
-      header = visualTasksHeader $ userVisualConfig user
-  in case tasks of
-    [] -> noTasksText
-    _ -> tasks
-      & zipWith (<>) (map ((<> ". ") . Text.pack . show) [1..])
-      & (header:)
-      & Text.unlines
-
 newtype Model = Model Connection
 
 bot :: Connection -> BotApp Model Action
@@ -72,13 +60,19 @@ handleAction DeleteMessage model = model <# deleteUpdateMessage
 
 handleAction (UpdateMainMessage userId@(UserId chatId _)) (Model conn) = Model conn <# do
   user <- getOrCreateUser conn userId
-  edit user $ userMainMessage user
+  let mainMsg = userMainMessage user
+  let someChatId = SomeChatId chatId
+  let tasks = user & userTasks
+  let editMessageData = case tasks of
+                          [] -> toEditMessage $ user & userVisualConfig & visualNoTasksText
+                          _ -> (toEditMessage $ user & userVisualConfig & visualTasksHeader)
+                                 { editMessageReplyMarkup = replyMarkup tasks }
+  editMessage
+    (EditChatMessageId someChatId mainMsg)
+    editMessageData
   where
-    edit user msgId = do
-      let someChatId = SomeChatId chatId
-      editMessage
-        (EditChatMessageId someChatId msgId)
-        (toEditMessage $ renderTasks user)
+    replyMarkup tasks = Just $ SomeInlineKeyboardMarkup $ InlineKeyboardMarkup $
+      map (\task -> [actionButton task (CompleteTask task)]) tasks
 
 handleAction (AddTasks tasks) (Model conn) = Model conn <# do
   currentUserId >>= actOnJustM \userId -> do
@@ -106,12 +100,13 @@ handleAction (SetNoTasksText txt) (Model conn) = Model conn <# do
 
 handleAction CreateNewMainMessage (Model conn) = Model conn <# do
   currentUserId >>= actOnJustM \userId@(UserId chatId _) -> do
-    txt <- renderTasks <$> getOrCreateUser conn userId
-    mainMsgId <- messageMessageId <$> sendTextMessageTo userId txt
+    mainMsgId <- messageMessageId <$> sendTextMessageTo userId initialText
     pinMessageUniquely chatId mainMsgId
     liftIO $ updateMainMessageId conn userId mainMsgId
     deleteUpdateMessage
-    return NoAction
+    return $ UpdateMainMessage userId
+  where
+    initialText = "Welcome! This text will be updated soon"
 
 handleAction ShowHelp (Model conn) = Model conn <# do
   currentUserId >>= actOnJustM \userId@(UserId chatId _) -> do
