@@ -5,9 +5,10 @@ module Persistence where
 
 import Models
 
-import Database.SQLite.Simple
-import Data.Text (Text)
 import Telegram.Bot.API.Types hiding (User, UserId)
+import Database.SQLite.Simple
+
+import Data.Text (Text)
 import Data.Maybe (listToMaybe)
 
 initDb :: Connection -> IO ()
@@ -80,7 +81,7 @@ updateMainMessageId conn (UserId (ChatId chatId) mThreadId) (MessageId msgId) =
 
 getTasks :: Connection -> UserId -> IO [Text]
 getTasks conn (UserId (ChatId chatId) mThreadId) =
-  fmap fromOnly <$> case mThreadId of
+  map fromOnly <$> case mThreadId of
     Just (MessageThreadId threadId) -> query conn
       "SELECT text FROM tasks WHERE userChatId = ? AND userMessageThreadId = ?"
       (chatId, threadId)
@@ -90,7 +91,7 @@ getTasks conn (UserId (ChatId chatId) mThreadId) =
 
 getMainMessageId :: Connection -> UserId -> IO (Maybe MessageId)
 getMainMessageId conn (UserId (ChatId chatId) mThreadId) =
-  fmap listToMaybe $ fmap (MessageId . fromOnly) <$> case mThreadId of
+  fmap listToMaybe $ map (MessageId . fromOnly) <$> case mThreadId of
     Just (MessageThreadId threadId) -> query conn
       "SELECT mainMessageId FROM users WHERE chatId = ? AND userMessageThreadId = ?"
       (chatId, threadId)
@@ -109,7 +110,6 @@ getUserWithId conn userId@(UserId (ChatId chatId) mThreadId) =
       tasks <- getTasks conn userId
       return $ Just $
         User tasks (MessageId mainMsgId) (VisualConfig noTasksText tasksHeader)
-
     _ -> return Nothing
   where
     queryUserWithoutThreadId = query conn

@@ -11,7 +11,7 @@ import Models
 
 import Telegram.Bot.API hiding (editMessageReplyMarkup, User, UserId)
 import Telegram.Bot.Simple
-import Telegram.Bot.Simple.UpdateParser (parseUpdate, text, command, callbackQueryDataRead, mkParser)
+import Telegram.Bot.Simple.UpdateParser (parseUpdate, command, callbackQueryDataRead, mkParser, plainText)
 import Database.SQLite.Simple
 import Configuration.Dotenv (loadFile, defaultConfig)
 
@@ -41,17 +41,16 @@ bot conn = BotApp
 
 handleUpdate :: Model -> Update -> Maybe Action
 handleUpdate _ = parseUpdate $
-  DeleteMessage <$ messagePinedMessageId <|>
+  AddTasks . Text.lines <$> plainText <|>
+  callbackQueryDataRead <|>
   CompleteTask <$> command "done" <|>
+  DeleteMessage <$ pinMessageMessage <|>
+  CreateNewMainMessage <$ command "reload" <|>
   SetTasksHeader <$> command "setheader" <|>
   SetNoTasksText <$> command "setnotaskstext" <|>
-  CreateNewMainMessage <$ command "reload" <|>
-  ShowHelp <$ command "help" <|>
-  callbackQueryDataRead <|>
-  AddTasks . Text.lines <$> text
+  ShowHelp <$ command "help"
   where
-    messagePinedMessageId =
-      mkParser (fmap messageMessageId . messagePinnedMessage <=< updateMessage)
+    pinMessageMessage = mkParser (fmap messageMessageId . messagePinnedMessage <=< updateMessage)
 
 handleAction :: Action -> Model -> Eff Action Model
 handleAction NoAction model = pure model
@@ -62,17 +61,19 @@ handleAction (UpdateMainMessage userId@(UserId chatId _)) (Model conn) = Model c
   user <- getOrCreateUser conn userId
   let mainMsg = userMainMessage user
   let someChatId = SomeChatId chatId
-  let tasks = user & userTasks
-  let editMessageData = case tasks of
-                          [] -> toEditMessage $ user & userVisualConfig & visualNoTasksText
-                          _ -> (toEditMessage $ user & userVisualConfig & visualTasksHeader)
-                                 { editMessageReplyMarkup = replyMarkup tasks }
   editMessage
     (EditChatMessageId someChatId mainMsg)
-    editMessageData
+    (editMessageData user)
   where
     replyMarkup tasks = Just $ SomeInlineKeyboardMarkup $ InlineKeyboardMarkup $
       map (\task -> [actionButton task (CompleteTask task)]) tasks
+
+    editMessageData user =
+      let tasks = user & userTasks
+      in case tasks of
+        [] -> toEditMessage $ user & userVisualConfig & visualNoTasksText
+        _ -> (toEditMessage $ user & userVisualConfig & visualTasksHeader)
+               { editMessageReplyMarkup = replyMarkup tasks }
 
 handleAction (AddTasks tasks) (Model conn) = Model conn <# do
   currentUserId >>= actOnJustM \userId -> do
@@ -99,9 +100,8 @@ handleAction (SetNoTasksText txt) (Model conn) = Model conn <# do
     return $ UpdateMainMessage userId
 
 handleAction CreateNewMainMessage (Model conn) = Model conn <# do
-  currentUserId >>= actOnJustM \userId@(UserId chatId _) -> do
-    mainMsgId <- messageMessageId <$> sendTextMessageTo userId initialText
-    pinMessageUniquely chatId mainMsgId
+  currentUserId >>= actOnJustM \userId -> do
+    mainMsgId <- sendMainMessage userId initialText
     liftIO $ updateMainMessageId conn userId mainMsgId
     deleteUpdateMessage
     return $ UpdateMainMessage userId
@@ -136,14 +136,13 @@ currentUserId =
     mThreadId <- asks $ botContextUpdate >=> updateMessage >=> messageMessageThreadId
     return $ UserId chatId mThreadId
 
-currentUser :: Connection -> BotM (Maybe User)
-currentUser conn =
-  fmap join $ traverse (liftIO . getUserWithId conn) =<< currentUserId
-
 getOrCreateUser :: Connection -> UserId -> BotM User
 getOrCreateUser conn userId =
-  maybe initDefaultUser pure =<< currentUser conn
+  currentUser >>= maybe initDefaultUser pure
   where
+    currentUser =
+      fmap join $ traverse (liftIO . getUserWithId conn) =<< currentUserId
+
     initDefaultUser =
       let visualConfig = VisualConfig
             "No tasks available! Take a break or add some tasks. 😊"
@@ -153,8 +152,14 @@ getOrCreateUser conn userId =
 
 initUser :: Connection -> UserId -> Text -> VisualConfig -> BotM User
 initUser conn userId initialText visualConfig = do
-  mainMsgId <- messageMessageId <$> sendTextMessageTo userId initialText
+  mainMsgId <- sendMainMessage userId initialText
   liftIO $ createEmptyUser conn userId mainMsgId visualConfig
+
+sendMainMessage :: UserId -> Text -> BotM MessageId
+sendMainMessage userId@(UserId chatId _) initialText = do
+  mainMsgId <- messageMessageId <$> sendTextMessageTo userId initialText
+  pinMessageUniquely chatId mainMsgId
+  return mainMsgId
 
 run :: Connection -> Token -> IO ()
 run conn =
