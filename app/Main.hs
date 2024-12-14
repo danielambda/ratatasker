@@ -41,8 +41,8 @@ bot conn = BotApp
 
 handleUpdate :: Model -> Update -> Maybe Action
 handleUpdate _ = parseUpdate $
-  AddTasks . Text.lines <$> plainText <|>
   callbackQueryDataRead <|>
+  AddTasks . Text.lines <$> plainText <|>
   CompleteTask <$> command "done" <|>
   DeleteMessage <$ pinMessageMessage <|>
   CreateNewMainMessage <$ command "reload" <|>
