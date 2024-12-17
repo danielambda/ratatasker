@@ -11,9 +11,10 @@ import Models
 
 import Telegram.Bot.API hiding (editMessageReplyMarkup, User, UserId)
 import Telegram.Bot.Simple
-import Telegram.Bot.Simple.UpdateParser (parseUpdate, command, callbackQueryDataRead, mkParser, plainText)
+import Telegram.Bot.Simple.UpdateParser (parseUpdate, command, callbackQueryDataRead, mkParser, plainText, commandWithBotName)
 import Database.SQLite.Simple
 import Configuration.Dotenv (loadFile, defaultConfig)
+import Servant.Client
 
 import GHC.Base (join)
 import Control.Applicative ((<|>))
@@ -29,35 +30,43 @@ import System.Environment (getEnv)
 readMaybe :: Read a => Text -> Maybe a
 readMaybe = Text.Read.readMaybe . Text.unpack
 
-newtype Model = Model Connection
+data Model = Model
+  { modelConn :: Connection
+  , modelBotName :: BotName
+  }
 
-bot :: Connection -> BotApp Model Action
-bot conn = BotApp
-  { botInitialModel = Model conn
+bot :: Connection -> BotName -> BotApp Model Action
+bot conn botName = BotApp
+  { botInitialModel = Model conn botName
   , botAction = flip handleUpdate
   , botHandler = handleAction
   , botJobs = []
   }
 
 handleUpdate :: Model -> Update -> Maybe Action
-handleUpdate _ = parseUpdate $
+handleUpdate model = parseUpdate $
   callbackQueryDataRead <|>
   AddTasks . Text.lines <$> plainText <|>
-  CompleteTask <$> command "done" <|>
+  CompleteTask <$> universalCommand "done" <|>
   DeleteMessage <$ pinMessageMessage <|>
-  CreateNewMainMessage <$ command "reload" <|>
-  SetTasksHeader <$> command "setheader" <|>
-  SetNoTasksText <$> command "setnotaskstext" <|>
-  ShowHelp <$ command "help"
+  CreateNewMainMessage <$ universalCommand "reload" <|>
+  SetTasksHeader <$> universalCommand "setheader" <|>
+  SetNoTasksText <$> universalCommand "setnotaskstext" <|>
+  ShowHelp <$ universalCommand "help"
   where
     pinMessageMessage = mkParser (fmap messageMessageId . messagePinnedMessage <=< updateMessage)
+
+    universalCommand cmd =
+      let BotName botName = modelBotName model in
+      command cmd <|> commandWithBotName botName cmd
 
 handleAction :: Action -> Model -> Eff Action Model
 handleAction NoAction model = pure model
 
 handleAction DeleteMessage model = model <# deleteUpdateMessage
 
-handleAction (UpdateMainMessage userId@(UserId chatId _)) (Model conn) = Model conn <# do
+handleAction (UpdateMainMessage userId@(UserId chatId _)) model = model <# do
+  let conn = modelConn model
   user <- getOrCreateUser conn userId
   let mainMsg = userMainMessage user
   let someChatId = SomeChatId chatId
@@ -75,42 +84,48 @@ handleAction (UpdateMainMessage userId@(UserId chatId _)) (Model conn) = Model c
         _ -> (toEditMessage $ user & userVisualConfig & visualTasksHeader)
                { editMessageReplyMarkup = replyMarkup tasks }
 
-handleAction (AddTasks tasks) (Model conn) = Model conn <# do
+handleAction (AddTasks tasks) model = model <# do
   currentUserId >>= actOnJustM \userId -> do
+    let conn = modelConn model
     liftIO $ forM_ tasks $ addTask conn userId
     deleteUpdateMessage
     return $ UpdateMainMessage userId
 
-handleAction (CompleteTask task) (Model conn) = Model conn <# do
+handleAction (CompleteTask task) model = model <# do
   currentUserId >>= actOnJustM \userId -> do
+    let conn = modelConn model
     liftIO $ deleteTask conn userId task
     deleteUpdateMessage
     return $ UpdateMainMessage userId
 
-handleAction (SetTasksHeader header) (Model conn) = Model conn <# do
+handleAction (SetTasksHeader header) model = model <# do
   currentUserId >>= actOnJustM \userId -> do
+    let conn = modelConn model
     liftIO $ updateTasksHeader conn userId header
     deleteUpdateMessage
     return $ UpdateMainMessage userId
 
-handleAction (SetNoTasksText txt) (Model conn) = Model conn <# do
+handleAction (SetNoTasksText txt) model = model <# do
   currentUserId >>= actOnJustM \userId -> do
+    let conn = modelConn model
     liftIO $ updateNoTasksText conn userId txt
     deleteUpdateMessage
     return $ UpdateMainMessage userId
 
-handleAction CreateNewMainMessage (Model conn) = Model conn <# do
+handleAction CreateNewMainMessage model = model <# do
   currentUserId >>= actOnJustM \userId -> do
     mainMsgId <- sendMainMessage userId initialText
+    let conn = modelConn model
     liftIO $ updateMainMessageId conn userId mainMsgId
     deleteUpdateMessage
     return $ UpdateMainMessage userId
   where
     initialText = "Welcome! This text will be updated soon"
 
-handleAction ShowHelp (Model conn) = Model conn <# do
+handleAction ShowHelp model = model <# do
   currentUserId >>= actOnJustM \userId@(UserId chatId _) -> do
     deleteUpdateMessage
+    let conn = modelConn model
     mainMsgId <- userMainMessage <$> getOrCreateUser conn userId
     editMessage
       (EditChatMessageId (SomeChatId chatId) mainMsgId)
@@ -162,8 +177,11 @@ sendMainMessage userId@(UserId chatId _) initialText = do
   return mainMsgId
 
 run :: Connection -> Token -> IO ()
-run conn =
-  startBot_ (bot conn) <=< defaultTelegramClientEnv
+run conn token = do
+  env <- defaultTelegramClientEnv token
+  mUsername <- either (error . show) (userUsername . responseResult) <$> runClientM getMe env
+  let botName = maybe (error "bot name is not defined") BotName mUsername
+  startBot_ (bot conn botName) env
 
 main :: IO ()
 main = do
