@@ -1,5 +1,4 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE LambdaCase #-}
 
 module Persistence where
 
@@ -33,9 +32,8 @@ initDb conn = do
     \)"
 
 addTask :: Connection -> UserId -> Text -> IO ()
-addTask conn (UserId (ChatId chatId) mThreadIdWrapped) task =
-  let mThreadId = fmap (\(MessageThreadId m) -> m) mThreadIdWrapped
-  in execute conn
+addTask conn (UserId (ChatId chatId) mThreadId) task =
+  execute conn
     "INSERT INTO tasks (userChatId, userMessageThreadId, text) VALUES (?, ?, ?)"
     (chatId, mThreadId, task)
 
@@ -100,16 +98,18 @@ getMainMessageId conn (UserId (ChatId chatId) mThreadId) =
       (Only chatId)
 
 getUserWithId :: Connection -> UserId -> IO (Maybe User)
-getUserWithId conn userId@(UserId (ChatId chatId) mThreadId) =
-  maybe
+getUserWithId conn userId@(UserId (ChatId chatId) mThreadId) = do
+  result <- maybe
     queryUserWithoutThreadId
     queryUserWithThreadId
-    mThreadId >>=
-  \case
+    mThreadId
+
+  case result of
     [(mainMsgId, noTasksText, tasksHeader)] -> do
       tasks <- getTasks conn userId
       return $ Just $
         User tasks (MessageId mainMsgId) (VisualConfig noTasksText tasksHeader)
+
     _ -> return Nothing
   where
     queryUserWithoutThreadId = query conn
@@ -127,15 +127,13 @@ getUserWithId conn userId@(UserId (ChatId chatId) mThreadId) =
 createEmptyUser :: Connection -> UserId -> MessageId -> VisualConfig -> IO User
 createEmptyUser
   conn
-  (UserId (ChatId chatId) mThreadIdWrapped)
+  (UserId (ChatId chatId) mThreadId)
   (MessageId mainMsgId)
   (VisualConfig noTasksText header)
   = do
-  let mThreadId = (\(MessageThreadId x) -> x) <$> mThreadIdWrapped
   execute conn
     "INSERT INTO users \
-    \(chatId, messageThreadId, \
-    \mainMessageId, noTasksText, tasksHeader) \
+    \(chatId, messageThreadId, mainMessageId, noTasksText, tasksHeader) \
     \VALUES (?, ?, ?, ?, ?)"
     (chatId, mThreadId, mainMsgId, noTasksText, header)
 
