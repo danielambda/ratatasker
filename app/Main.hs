@@ -19,7 +19,7 @@ import Servant.Client
 import GHC.Base (join)
 import Control.Applicative ((<|>))
 import Control.Monad.Reader (asks)
-import Control.Monad ((<=<), (>=>), forM_)
+import Control.Monad ((<=<), forM_, (>=>))
 import Control.Monad.IO.Class (liftIO)
 import Data.Function ((&))
 import Data.Text (Text)
@@ -148,7 +148,11 @@ handleAction ShowHelp model = model <# do
 currentUserId :: BotM (Maybe UserId)
 currentUserId =
   currentChatId >>= traverse \chatId -> do
-    mThreadId <- asks $ botContextUpdate >=> updateMessage >=> messageMessageThreadId
+    mThreadIdFromUpdate <-
+      asks $ botContextUpdate >=> updateMessage >=> messageMessageThreadId
+    mThreadIdFromCallbackQuery <-
+      asks $ botContextUpdate >=> updateCallbackQuery >=> callbackQueryMessage >=> messageMessageThreadId
+    let mThreadId = mThreadIdFromUpdate <|> mThreadIdFromCallbackQuery
     return $ UserId chatId mThreadId
 
 getOrCreateUser :: Connection -> UserId -> BotM User

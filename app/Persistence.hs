@@ -40,12 +40,16 @@ addTask conn (UserId (ChatId chatId) mThreadId) task =
 deleteTask :: Connection -> UserId -> Text -> IO ()
 deleteTask conn (UserId (ChatId chatId) mThreadId) task =
   case mThreadId of
-    Just (MessageThreadId threadId) -> execute conn
-      "DELETE FROM tasks WHERE userChatId = ? AND userMessageThreadId = ? AND text = ?"
-      (chatId, threadId, task)
-    Nothing -> execute conn
-      "DELETE FROM tasks WHERE userChatId = ? AND userMessageThreadId IS NULL AND text = ?"
-      (chatId, task)
+    Just (MessageThreadId threadId) -> do
+      putStrLn "Just (MessageThreadId threadId) -> do"
+      execute conn
+        "DELETE FROM tasks WHERE userChatId = ? AND userMessageThreadId = ? AND text = ?"
+        (chatId, threadId, task)
+    Nothing -> do
+      putStrLn "Nothing"
+      execute conn
+        "DELETE FROM tasks WHERE userChatId = ? AND userMessageThreadId IS NULL AND text = ?"
+        (chatId, task)
 
 updateTasksHeader :: Connection -> UserId -> Text -> IO ()
 updateTasksHeader conn (UserId (ChatId chatId) mThreadId) header =
